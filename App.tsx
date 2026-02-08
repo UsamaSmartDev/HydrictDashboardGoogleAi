@@ -5,12 +5,12 @@ import {
 } from 'recharts';
 import { 
   Upload, TrendingUp, DollarSign, ShoppingCart, 
-  ArrowUpRight, ArrowDownRight, Info, AlertCircle, Sparkles, Plus, Trash2, Calendar
+  ArrowUpRight, ArrowDownRight, Info, AlertCircle, Sparkles, Plus, Trash2, Calendar, CheckCircle2
 } from 'lucide-react';
 import { parseCSV, formatCurrency } from './utils/csvParser';
 import { geminiService } from './services/geminiService';
 import { 
-  ShopifyOrder, MetaAdReport, ManualExpense, ProductCOGS, 
+  ShopifyOrder, ShopifySalesRecord, MetaAdReport, ManualExpense, ProductCOGS, 
   DashboardStats, ReportType 
 } from './types';
 
@@ -31,6 +31,7 @@ const MOCK_ORDERS: ShopifyOrder[] = [
 export default function App() {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'reports' | 'manual' | 'ai'>('dashboard');
   const [orders, setOrders] = useState<ShopifyOrder[]>(MOCK_ORDERS);
+  const [salesRecords, setSalesRecords] = useState<ShopifySalesRecord[]>([]);
   const [ads, setAds] = useState<MetaAdReport[]>([]);
   const [expenses, setExpenses] = useState<ManualExpense[]>([]);
   const [cogs, setCogs] = useState<ProductCOGS[]>([
@@ -39,6 +40,7 @@ export default function App() {
   ]);
   const [aiInsight, setAiInsight] = useState<string>('');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [uploadStatus, setUploadStatus] = useState<Record<string, boolean>>({});
   
   // Date range states
   const [startDate, setStartDate] = useState<string>('2023-10-01');
@@ -46,6 +48,7 @@ export default function App() {
 
   // Helper to filter data by date
   const isWithinRange = (dateStr: string) => {
+    if (!dateStr) return false;
     const d = new Date(dateStr);
     const start = new Date(startDate);
     const end = new Date(endDate);
@@ -54,13 +57,21 @@ export default function App() {
 
   // Filtered Data Sets
   const filteredOrders = useMemo(() => orders.filter(o => isWithinRange(o.date)), [orders, startDate, endDate]);
+  const filteredSales = useMemo(() => salesRecords.filter(s => isWithinRange(s.date)), [salesRecords, startDate, endDate]);
   const filteredAds = useMemo(() => ads.filter(a => isWithinRange(a.date)), [ads, startDate, endDate]);
 
   // Process data to calculate statistics based on date range
   const stats = useMemo<DashboardStats>(() => {
-    const totalSales = filteredOrders.reduce((acc, curr) => acc + curr.total, 0);
+    // If we have sales records, we prioritize them for the "Sales" KPI as they are more accurate for financial reporting
+    const totalSales = filteredSales.length > 0 
+      ? filteredSales.reduce((acc, curr) => acc + curr.totalSales, 0)
+      : filteredOrders.reduce((acc, curr) => acc + curr.total, 0);
+
     const totalAdSpend = filteredAds.reduce((acc, curr) => acc + curr.spend, 0);
-    const totalShipping = filteredOrders.reduce((acc, curr) => acc + curr.shipping, 0);
+    const totalShipping = filteredSales.length > 0
+      ? filteredSales.reduce((acc, curr) => acc + curr.shipping, 0)
+      : filteredOrders.reduce((acc, curr) => acc + curr.shipping, 0);
+    
     const totalExpenses = expenses.reduce((acc, curr) => acc + curr.amount, 0);
     
     let totalCogs = 0;
@@ -88,17 +99,26 @@ export default function App() {
       roas,
       netMargin
     };
-  }, [filteredOrders, filteredAds, expenses, cogs]);
+  }, [filteredOrders, filteredSales, filteredAds, expenses, cogs]);
 
   const chartData = useMemo(() => {
     const dailyData: Record<string, any> = {};
-    filteredOrders.forEach(o => {
-      if (!dailyData[o.date]) dailyData[o.date] = { date: o.date, sales: 0, orders: 0 };
-      dailyData[o.date].sales += o.total;
-      dailyData[o.date].orders += 1;
-    });
+    
+    // Priority: Sales Records for chart if available
+    if (filteredSales.length > 0) {
+      filteredSales.forEach(s => {
+        if (!dailyData[s.date]) dailyData[s.date] = { date: s.date, sales: 0 };
+        dailyData[s.date].sales += s.totalSales;
+      });
+    } else {
+      filteredOrders.forEach(o => {
+        if (!dailyData[o.date]) dailyData[o.date] = { date: o.date, sales: 0 };
+        dailyData[o.date].sales += o.total;
+      });
+    }
+    
     return Object.values(dailyData).sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-  }, [filteredOrders]);
+  }, [filteredOrders, filteredSales]);
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>, type: ReportType) => {
     const file = e.target.files?.[0];
@@ -106,34 +126,61 @@ export default function App() {
 
     const reader = new FileReader();
     reader.onload = async (event) => {
-      const text = event.target?.result as string;
-      const data = parseCSV(text);
-      
-      if (type === 'shopify_orders') {
-        const mappedOrders: ShopifyOrder[] = data.map((row, idx) => ({
-          id: row.Id || row.Name || idx.toString(),
-          name: row.Name || `Order-${idx}`,
-          date: row['Created at']?.split(' ')[0] || row.Date || getTodayStr(),
-          total: parseFloat(row.Total) || 0,
-          subtotal: parseFloat(row.Subtotal) || 0,
-          tax: parseFloat(row.Tax) || 0,
-          shipping: parseFloat(row.Shipping) || 0,
-          status: row['Financial Status'] || row.Status || 'Paid',
-          lineItems: [{ sku: row.SKU || 'UNKNOWN', title: row['Lineitem name'] || row.Title || 'Product', quantity: parseInt(row['Lineitem quantity']) || 1, price: parseFloat(row['Lineitem price']) || 0 }]
-        }));
-        setOrders(prev => [...prev, ...mappedOrders]);
-      } else if (type === 'meta_ads') {
-        const mappedAds: MetaAdReport[] = data.map(row => ({
-          date: row.Date || getTodayStr(),
-          campaignName: row['Campaign name'] || 'Unknown',
-          spend: parseFloat(row['Amount spent (USD)']) || parseFloat(row.Spend) || 0,
-          impressions: parseInt(row.Impressions) || 0,
-          clicks: parseInt(row['Link clicks']) || 0
-        }));
-        setAds(prev => [...prev, ...mappedAds]);
+      try {
+        const text = event.target?.result as string;
+        const data = parseCSV(text);
+        
+        if (data.length === 0) {
+          alert("CSV is empty or could not be parsed.");
+          return;
+        }
+
+        if (type === 'shopify_orders') {
+          const mappedOrders: ShopifyOrder[] = data.map((row, idx) => ({
+            id: row.Id || row.Name || idx.toString(),
+            name: row.Name || `Order-${idx}`,
+            date: row['Created at']?.split(' ')[0] || row.Date || getTodayStr(),
+            total: parseFloat(row.Total) || 0,
+            subtotal: parseFloat(row.Subtotal) || 0,
+            tax: parseFloat(row.Tax) || 0,
+            shipping: parseFloat(row.Shipping) || 0,
+            status: row['Financial Status'] || row.Status || 'Paid',
+            lineItems: [{ sku: row.SKU || 'UNKNOWN', title: row['Lineitem name'] || row.Title || 'Product', quantity: parseInt(row['Lineitem quantity']) || 1, price: parseFloat(row['Lineitem price']) || 0 }]
+          }));
+          setOrders(prev => [...prev, ...mappedOrders]);
+        } else if (type === 'shopify_sales') {
+          const mappedSales: ShopifySalesRecord[] = data.map(row => ({
+            date: row.Day || row.Date || getTodayStr(),
+            grossSales: parseFloat(row['Gross sales']) || 0,
+            discounts: parseFloat(row.Discounts) || 0,
+            returns: parseFloat(row.Returns) || 0,
+            netSales: parseFloat(row['Net sales']) || 0,
+            shipping: parseFloat(row.Shipping) || 0,
+            taxes: parseFloat(row.Taxes) || 0,
+            totalSales: parseFloat(row['Total sales']) || parseFloat(row.Total) || 0
+          }));
+          setSalesRecords(prev => [...prev, ...mappedSales]);
+        } else if (type === 'meta_ads') {
+          const mappedAds: MetaAdReport[] = data.map(row => ({
+            date: row.Date || getTodayStr(),
+            campaignName: row['Campaign name'] || 'Unknown',
+            spend: parseFloat(row['Amount spent (USD)']) || parseFloat(row.Spend) || parseFloat(row['Amount spent']) || 0,
+            impressions: parseInt(row.Impressions) || 0,
+            clicks: parseInt(row['Link clicks']) || 0
+          }));
+          setAds(prev => [...prev, ...mappedAds]);
+        }
+
+        setUploadStatus(prev => ({ ...prev, [type]: true }));
+        setTimeout(() => setUploadStatus(prev => ({ ...prev, [type]: false })), 3000);
+      } catch (err) {
+        console.error("Upload error:", err);
+        alert("There was an error parsing the file. Please ensure it is a valid CSV.");
       }
     };
     reader.readAsText(file);
+    // Reset file input value so same file can be uploaded again
+    e.target.value = '';
   };
 
   const runAiAnalysis = async () => {
@@ -279,7 +326,7 @@ export default function App() {
 
             <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
               <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
-                <h3 className="font-semibold text-slate-800">Filtered Transactions</h3>
+                <h3 className="font-semibold text-slate-800">Recent Transactions</h3>
                 <span className="text-xs font-medium text-slate-400">{filteredOrders.length} records found</span>
               </div>
               <div className="overflow-x-auto">
@@ -321,17 +368,33 @@ export default function App() {
         )}
 
         {activeTab === 'reports' && (
-          <div className="max-w-4xl mx-auto space-y-6 animate-in slide-in-from-bottom-4 duration-500">
+          <div className="max-w-5xl mx-auto space-y-6 animate-in slide-in-from-bottom-4 duration-500">
             <div className="bg-white p-12 rounded-3xl border border-slate-200 shadow-xl text-center">
               <div className="w-20 h-20 bg-indigo-50 rounded-2xl flex items-center justify-center mx-auto mb-6">
                 <Upload className="text-indigo-600 w-10 h-10" />
               </div>
               <h2 className="text-2xl font-bold text-slate-900 mb-2">Sync Your Data</h2>
-              <p className="text-slate-500 mb-10 max-w-sm mx-auto">Upload weekly or monthly CSV exports from Shopify and Meta.</p>
+              <p className="text-slate-500 mb-10 max-w-sm mx-auto">Upload weekly or monthly CSV exports from Shopify and Meta to power your dashboard.</p>
               
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <ReportUploader title="Shopify Orders" type="shopify_orders" onUpload={(e) => handleFileUpload(e, 'shopify_orders')} />
-                <ReportUploader title="Meta Ad Spend" type="meta_ads" onUpload={(e) => handleFileUpload(e, 'meta_ads')} />
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <ReportUploader 
+                  title="Shopify Sales" 
+                  type="shopify_sales" 
+                  success={uploadStatus['shopify_sales']} 
+                  onUpload={(e) => handleFileUpload(e, 'shopify_sales')} 
+                />
+                <ReportUploader 
+                  title="Shopify Orders" 
+                  type="shopify_orders" 
+                  success={uploadStatus['shopify_orders']} 
+                  onUpload={(e) => handleFileUpload(e, 'shopify_orders')} 
+                />
+                <ReportUploader 
+                  title="Meta Ad Spend" 
+                  type="meta_ads" 
+                  success={uploadStatus['meta_ads']} 
+                  onUpload={(e) => handleFileUpload(e, 'meta_ads')} 
+                />
               </div>
             </div>
           </div>
@@ -358,6 +421,7 @@ export default function App() {
                       <button onClick={() => setExpenses(expenses.filter(e => e.id !== exp.id))} className="text-slate-300 hover:text-rose-500"><Trash2 className="w-4 h-4" /></button>
                     </div>
                   ))}
+                  {expenses.length === 0 && <p className="text-center py-8 text-slate-400 text-sm italic">No manual expenses added.</p>}
                 </div>
               </div>
               <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
@@ -369,9 +433,12 @@ export default function App() {
                         <p className="text-xs font-bold text-indigo-600">{item.sku}</p>
                         <p className="text-sm text-slate-700">{item.productName}</p>
                       </div>
-                      <input type="number" className="w-20 px-2 py-1 border rounded font-medium text-sm text-right" value={item.cogs} onChange={(e) => {
-                        const n = [...cogs]; n[idx].cogs = parseFloat(e.target.value) || 0; setCogs(n);
-                      }} />
+                      <div className="flex items-center space-x-2">
+                        <span className="text-xs text-slate-400 font-medium">Cost:</span>
+                        <input type="number" className="w-20 px-2 py-1 border rounded font-medium text-sm text-right" value={item.cogs} onChange={(e) => {
+                          const n = [...cogs]; n[idx].cogs = parseFloat(e.target.value) || 0; setCogs(n);
+                        }} />
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -451,13 +518,13 @@ function LegendItem({ label, color, value }: { label: string; color: string; val
   );
 }
 
-function ReportUploader({ title, type, onUpload }: { title: string; type: string; onUpload: (e: any) => void }) {
+function ReportUploader({ title, type, onUpload, success }: { title: string; type: string; onUpload: (e: any) => void, success?: boolean }) {
   return (
-    <div className="group border-2 border-dashed border-slate-200 p-6 rounded-2xl hover:border-indigo-400 hover:bg-indigo-50 transition-all text-center">
+    <div className={`group border-2 border-dashed p-6 rounded-2xl transition-all text-center ${success ? 'border-emerald-400 bg-emerald-50' : 'border-slate-200 hover:border-indigo-400 hover:bg-indigo-50'}`}>
       <h4 className="text-sm font-bold text-slate-700 mb-3">{title}</h4>
       <input type="file" id={`upload-${type}`} className="hidden" accept=".csv" onChange={onUpload} />
-      <label htmlFor={`upload-${type}`} className="inline-flex items-center px-4 py-2 bg-slate-900 text-white text-xs font-bold rounded-xl cursor-pointer">
-        <Upload className="w-3.5 h-3.5 mr-2" /> Upload CSV
+      <label htmlFor={`upload-${type}`} className={`inline-flex items-center px-4 py-2 text-xs font-bold rounded-xl cursor-pointer transition-all ${success ? 'bg-emerald-600 text-white' : 'bg-slate-900 text-white'}`}>
+        {success ? <><CheckCircle2 className="w-3.5 h-3.5 mr-2" /> Uploaded</> : <><Upload className="w-3.5 h-3.5 mr-2" /> Upload CSV</>}
       </label>
     </div>
   );

@@ -11,6 +11,17 @@ export interface ShopifyOrder {
   status: string;
 }
 
+export interface ShopifySalesRecord {
+  date: string;
+  grossSales: number;
+  discounts: number;
+  returns: number;
+  netSales: number;
+  shipping: number;
+  taxes: number;
+  totalSales: number;
+}
+
 export interface LineItem {
   sku: string;
   title: string;
