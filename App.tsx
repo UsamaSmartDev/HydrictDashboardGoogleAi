@@ -1,18 +1,21 @@
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, PieChart, Pie
 } from 'recharts';
 import { 
   Upload, TrendingUp, DollarSign, ShoppingCart, 
-  ArrowUpRight, ArrowDownRight, Info, AlertCircle, Sparkles, Plus, Trash2, Calendar, CheckCircle2
+  ArrowUpRight, ArrowDownRight, Info, AlertCircle, Sparkles, Plus, Trash2, Calendar, CheckCircle2, RefreshCw
 } from 'lucide-react';
-import { parseCSV, formatCurrency } from './utils/csvParser';
+import { parseCSV } from './utils/csvParser';
 import { geminiService } from './services/geminiService';
 import { 
   ShopifyOrder, ShopifySalesRecord, MetaAdReport, ManualExpense, ProductCOGS, 
-  DashboardStats, ReportType 
+  DashboardStats, ReportType, Currency 
 } from './types';
+
+// Constants
+const USD_TO_PKR = 280; // Example static rate
 
 // Utility to get date strings
 const getTodayStr = () => new Date().toISOString().split('T')[0];
@@ -21,30 +24,31 @@ const getFirstOfMonthStr = () => {
   return new Date(d.getFullYear(), d.getMonth(), 1).toISOString().split('T')[0];
 };
 
-// Mock Data for Initial UI demo
-const MOCK_ORDERS: ShopifyOrder[] = [
-  { id: '1', name: '#1001', date: '2023-10-01', total: 120.50, subtotal: 100, tax: 5, shipping: 15.50, status: 'fulfilled', lineItems: [{ sku: 'HY-01', title: 'Hydrict Bottle V1', quantity: 1, price: 100 }] },
-  { id: '2', name: '#1002', date: '2023-10-15', total: 240.00, subtotal: 200, tax: 10, shipping: 30.00, status: 'fulfilled', lineItems: [{ sku: 'HY-01', title: 'Hydrict Bottle V1', quantity: 2, price: 100 }] },
-  { id: '3', name: '#1003', date: '2023-10-28', total: 95.00, subtotal: 80, tax: 5, shipping: 10.00, status: 'pending', lineItems: [{ sku: 'HY-02', title: 'Hydrict Filter Pro', quantity: 1, price: 80 }] },
-];
-
 export default function App() {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'reports' | 'manual' | 'ai'>('dashboard');
-  const [orders, setOrders] = useState<ShopifyOrder[]>(MOCK_ORDERS);
+  const [currency, setCurrency] = useState<Currency>('PKR');
+  const [orders, setOrders] = useState<ShopifyOrder[]>([]);
   const [salesRecords, setSalesRecords] = useState<ShopifySalesRecord[]>([]);
   const [ads, setAds] = useState<MetaAdReport[]>([]);
   const [expenses, setExpenses] = useState<ManualExpense[]>([]);
-  const [cogs, setCogs] = useState<ProductCOGS[]>([
-    { sku: 'HY-01', productName: 'Hydrict Bottle V1', cogs: 25 },
-    { sku: 'HY-02', productName: 'Hydrict Filter Pro', cogs: 12 },
-  ]);
+  const [cogs, setCogs] = useState<ProductCOGS[]>([]);
   const [aiInsight, setAiInsight] = useState<string>('');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [uploadStatus, setUploadStatus] = useState<Record<string, boolean>>({});
   
   // Date range states
-  const [startDate, setStartDate] = useState<string>('2023-10-01');
+  const [startDate, setStartDate] = useState<string>('2024-01-01');
   const [endDate, setEndDate] = useState<string>(getTodayStr());
+
+  // Formatting Helper
+  const formatVal = (amount: number) => {
+    const val = currency === 'PKR' ? amount * USD_TO_PKR : amount;
+    return new Intl.NumberFormat(currency === 'PKR' ? 'en-PK' : 'en-US', {
+      style: 'currency',
+      currency: currency,
+      maximumFractionDigits: 0
+    }).format(val);
+  };
 
   // Helper to filter data by date
   const isWithinRange = (dateStr: string) => {
@@ -52,6 +56,10 @@ export default function App() {
     const d = new Date(dateStr);
     const start = new Date(startDate);
     const end = new Date(endDate);
+    // Normalize to midnight for fair comparison
+    d.setHours(0,0,0,0);
+    start.setHours(0,0,0,0);
+    end.setHours(0,0,0,0);
     return d >= start && d <= end;
   };
 
@@ -60,31 +68,32 @@ export default function App() {
   const filteredSales = useMemo(() => salesRecords.filter(s => isWithinRange(s.date)), [salesRecords, startDate, endDate]);
   const filteredAds = useMemo(() => ads.filter(a => isWithinRange(a.date)), [ads, startDate, endDate]);
 
-  // Process data to calculate statistics based on date range
+  // Statistics Calculation
   const stats = useMemo<DashboardStats>(() => {
-    // If we have sales records, we prioritize them for the "Sales" KPI as they are more accurate for financial reporting
+    // Priority: Sales Records for accuracy, fallback to Orders
     const totalSales = filteredSales.length > 0 
       ? filteredSales.reduce((acc, curr) => acc + curr.totalSales, 0)
       : filteredOrders.reduce((acc, curr) => acc + curr.total, 0);
 
     const totalAdSpend = filteredAds.reduce((acc, curr) => acc + curr.spend, 0);
+    
     const totalShipping = filteredSales.length > 0
       ? filteredSales.reduce((acc, curr) => acc + curr.shipping, 0)
       : filteredOrders.reduce((acc, curr) => acc + curr.shipping, 0);
     
     const totalExpenses = expenses.reduce((acc, curr) => acc + curr.amount, 0);
     
-    let totalCogs = 0;
+    // COGS must be calculated from Orders (where SKU is present)
+    let totalCogsVal = 0;
     filteredOrders.forEach(order => {
       order.lineItems.forEach(item => {
         const itemCogs = cogs.find(c => c.sku === item.sku)?.cogs || 0;
-        totalCogs += itemCogs * item.quantity;
+        totalCogsVal += itemCogs * item.quantity;
       });
     });
 
-    const totalFees = totalSales * 0.03; 
-
-    const netProfit = totalSales - totalAdSpend - totalCogs - totalShipping - totalExpenses - totalFees;
+    const totalFees = totalSales * 0.03; // Estimated gateway/Shopify fees
+    const netProfit = totalSales - totalAdSpend - totalCogsVal - totalShipping - totalExpenses - totalFees;
     const roas = totalAdSpend > 0 ? totalSales / totalAdSpend : 0;
     const netMargin = totalSales > 0 ? (netProfit / totalSales) * 100 : 0;
 
@@ -92,7 +101,7 @@ export default function App() {
       totalSales,
       totalOrders: filteredOrders.length,
       totalAdSpend,
-      totalCogs,
+      totalCogs: totalCogsVal,
       totalShipping,
       totalFees,
       netProfit,
@@ -103,22 +112,38 @@ export default function App() {
 
   const chartData = useMemo(() => {
     const dailyData: Record<string, any> = {};
+    const sourceData = filteredSales.length > 0 ? filteredSales.map(s => ({ date: s.date, sales: s.totalSales })) 
+                                              : filteredOrders.map(o => ({ date: o.date, sales: o.total }));
     
-    // Priority: Sales Records for chart if available
-    if (filteredSales.length > 0) {
-      filteredSales.forEach(s => {
-        if (!dailyData[s.date]) dailyData[s.date] = { date: s.date, sales: 0 };
-        dailyData[s.date].sales += s.totalSales;
-      });
-    } else {
-      filteredOrders.forEach(o => {
-        if (!dailyData[o.date]) dailyData[o.date] = { date: o.date, sales: 0 };
-        dailyData[o.date].sales += o.total;
-      });
-    }
+    sourceData.forEach(item => {
+      if (!dailyData[item.date]) dailyData[item.date] = { date: item.date, sales: 0 };
+      dailyData[item.date].sales += item.sales;
+    });
     
     return Object.values(dailyData).sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
   }, [filteredOrders, filteredSales]);
+
+  // Dynamic SKU extraction from orders for Manual COGS
+  useEffect(() => {
+    const uniqueSkus = new Map<string, string>();
+    orders.forEach(order => {
+      order.lineItems.forEach(item => {
+        if (item.sku && item.sku !== 'UNKNOWN') {
+          uniqueSkus.set(item.sku, item.title);
+        }
+      });
+    });
+
+    setCogs(prev => {
+      const next = [...prev];
+      uniqueSkus.forEach((title, sku) => {
+        if (!next.find(c => c.sku === sku)) {
+          next.push({ sku, productName: title, cogs: 0 });
+        }
+      });
+      return next;
+    });
+  }, [orders]);
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>, type: ReportType) => {
     const file = e.target.files?.[0];
@@ -135,17 +160,24 @@ export default function App() {
           return;
         }
 
+        console.log(`Parsing ${type} with ${data.length} rows...`);
+
         if (type === 'shopify_orders') {
           const mappedOrders: ShopifyOrder[] = data.map((row, idx) => ({
             id: row.Id || row.Name || idx.toString(),
             name: row.Name || `Order-${idx}`,
-            date: row['Created at']?.split(' ')[0] || row.Date || getTodayStr(),
-            total: parseFloat(row.Total) || 0,
-            subtotal: parseFloat(row.Subtotal) || 0,
-            tax: parseFloat(row.Tax) || 0,
-            shipping: parseFloat(row.Shipping) || 0,
+            date: (row['Created at'] || row.Date || "").split(' ')[0] || getTodayStr(),
+            total: parseFloat(row.Total || row['Total price']) || 0,
+            subtotal: parseFloat(row.Subtotal || row['Subtotal price']) || 0,
+            tax: parseFloat(row.Tax || row['Total tax']) || 0,
+            shipping: parseFloat(row.Shipping || row['Shipping cost']) || 0,
             status: row['Financial Status'] || row.Status || 'Paid',
-            lineItems: [{ sku: row.SKU || 'UNKNOWN', title: row['Lineitem name'] || row.Title || 'Product', quantity: parseInt(row['Lineitem quantity']) || 1, price: parseFloat(row['Lineitem price']) || 0 }]
+            lineItems: [{ 
+              sku: row.SKU || row['Lineitem sku'] || 'UNKNOWN', 
+              title: row['Lineitem name'] || row.Title || 'Product', 
+              quantity: parseInt(row['Lineitem quantity'] || row.Quantity) || 1, 
+              price: parseFloat(row['Lineitem price'] || row.Price) || 0 
+            }]
           }));
           setOrders(prev => [...prev, ...mappedOrders]);
         } else if (type === 'shopify_sales') {
@@ -157,16 +189,16 @@ export default function App() {
             netSales: parseFloat(row['Net sales']) || 0,
             shipping: parseFloat(row.Shipping) || 0,
             taxes: parseFloat(row.Taxes) || 0,
-            totalSales: parseFloat(row['Total sales']) || parseFloat(row.Total) || 0
+            totalSales: parseFloat(row['Total sales'] || row.Total) || 0
           }));
           setSalesRecords(prev => [...prev, ...mappedSales]);
         } else if (type === 'meta_ads') {
           const mappedAds: MetaAdReport[] = data.map(row => ({
-            date: row.Date || getTodayStr(),
+            date: row.Date || row['Reporting starts'] || getTodayStr(),
             campaignName: row['Campaign name'] || 'Unknown',
-            spend: parseFloat(row['Amount spent (USD)']) || parseFloat(row.Spend) || parseFloat(row['Amount spent']) || 0,
+            spend: parseFloat(row['Amount spent (USD)'] || row.Spend || row['Amount spent'] || 0),
             impressions: parseInt(row.Impressions) || 0,
-            clicks: parseInt(row['Link clicks']) || 0
+            clicks: parseInt(row['Link clicks'] || row.Clicks) || 0
           }));
           setAds(prev => [...prev, ...mappedAds]);
         }
@@ -175,11 +207,10 @@ export default function App() {
         setTimeout(() => setUploadStatus(prev => ({ ...prev, [type]: false })), 3000);
       } catch (err) {
         console.error("Upload error:", err);
-        alert("There was an error parsing the file. Please ensure it is a valid CSV.");
+        alert("There was an error parsing the file. Please ensure it is a valid Shopify/Meta export.");
       }
     };
     reader.readAsText(file);
-    // Reset file input value so same file can be uploaded again
     e.target.value = '';
   };
 
@@ -187,9 +218,10 @@ export default function App() {
     setIsAnalyzing(true);
     const summary = `
       Performance Period: ${startDate} to ${endDate}
-      Total Sales: ${formatCurrency(stats.totalSales)}
-      Net Profit: ${formatCurrency(stats.netProfit)}
-      Ad Spend: ${formatCurrency(stats.totalAdSpend)}
+      Currency: ${currency}
+      Total Sales: ${formatVal(stats.totalSales)}
+      Net Profit: ${formatVal(stats.netProfit)}
+      Ad Spend: ${formatVal(stats.totalAdSpend)}
       ROAS: ${stats.roas.toFixed(2)}
       Net Margin: ${stats.netMargin.toFixed(1)}%
       Orders: ${stats.totalOrders}
@@ -209,7 +241,7 @@ export default function App() {
             </div>
             <div>
               <h1 className="text-xl font-bold text-slate-900 tracking-tight">Hydrict <span className="text-indigo-600 tracking-tight">Intelligence</span></h1>
-              <p className="text-xs text-slate-500 font-medium">Performance Analytics</p>
+              <p className="text-xs text-slate-500 font-medium uppercase tracking-widest">Brand Growth Engine</p>
             </div>
           </div>
           
@@ -225,21 +257,39 @@ export default function App() {
             ))}
           </div>
 
-          <div className="flex items-center space-x-3 bg-white border border-slate-200 p-1.5 rounded-xl shadow-sm">
-            <Calendar className="w-4 h-4 text-slate-400 ml-2" />
-            <input 
-              type="date" 
-              className="text-xs font-medium text-slate-600 bg-transparent focus:outline-none" 
-              value={startDate}
-              onChange={(e) => setStartDate(e.target.value)}
-            />
-            <span className="text-slate-300">—</span>
-            <input 
-              type="date" 
-              className="text-xs font-medium text-slate-600 bg-transparent focus:outline-none" 
-              value={endDate}
-              onChange={(e) => setEndDate(e.target.value)}
-            />
+          <div className="flex items-center space-x-4">
+             {/* Currency Toggle */}
+            <div className="flex bg-slate-100 p-1 rounded-xl border border-slate-200">
+              <button 
+                onClick={() => setCurrency('PKR')}
+                className={`px-3 py-1 rounded-lg text-[10px] font-bold transition-all ${currency === 'PKR' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-500'}`}
+              >
+                PKR
+              </button>
+              <button 
+                onClick={() => setCurrency('USD')}
+                className={`px-3 py-1 rounded-lg text-[10px] font-bold transition-all ${currency === 'USD' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-500'}`}
+              >
+                USD
+              </button>
+            </div>
+
+            <div className="flex items-center space-x-3 bg-white border border-slate-200 p-1.5 rounded-xl shadow-sm">
+              <Calendar className="w-4 h-4 text-slate-400 ml-1" />
+              <input 
+                type="date" 
+                className="text-xs font-medium text-slate-600 bg-transparent focus:outline-none" 
+                value={startDate}
+                onChange={(e) => setStartDate(e.target.value)}
+              />
+              <span className="text-slate-300">—</span>
+              <input 
+                type="date" 
+                className="text-xs font-medium text-slate-600 bg-transparent focus:outline-none" 
+                value={endDate}
+                onChange={(e) => setEndDate(e.target.value)}
+              />
+            </div>
           </div>
         </div>
       </header>
@@ -249,42 +299,32 @@ export default function App() {
           <div className="space-y-8 animate-in fade-in duration-500">
             <div className="flex items-center justify-between">
               <div>
-                <h2 className="text-2xl font-bold text-slate-900">Store Overview</h2>
-                <p className="text-sm text-slate-500">Results from {startDate} to {endDate}</p>
-              </div>
-              <div className="flex items-center space-x-2">
-                <button 
-                  onClick={() => { setStartDate('2023-10-01'); setEndDate('2023-10-31'); }}
-                  className="px-3 py-1.5 bg-white border border-slate-200 text-xs font-medium rounded-lg hover:bg-slate-50"
-                >
-                  Oct '23
-                </button>
-                <button 
-                  onClick={() => { setStartDate(getFirstOfMonthStr()); setEndDate(getTodayStr()); }}
-                  className="px-3 py-1.5 bg-white border border-slate-200 text-xs font-medium rounded-lg hover:bg-slate-50"
-                >
-                  This Month
-                </button>
+                <h2 className="text-2xl font-bold text-slate-900">Performance Dashboard</h2>
+                <p className="text-sm text-slate-500">Consolidated analytics for {startDate} to {endDate}</p>
               </div>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-              <KPICard title="Net Profit" value={formatCurrency(stats.netProfit)} sub={`${stats.netMargin.toFixed(1)}% Margin`} icon={<DollarSign className="w-5 h-5 text-emerald-600" />} color="emerald" trend={stats.netProfit > 0 ? 'up' : 'down'} />
-              <KPICard title="Gross Sales" value={formatCurrency(stats.totalSales)} sub={`${stats.totalOrders} Orders`} icon={<ShoppingCart className="w-5 h-5 text-indigo-600" />} color="indigo" trend="up" />
-              <KPICard title="Ad Spend" value={formatCurrency(stats.totalAdSpend)} sub={`ROAS: ${stats.roas.toFixed(2)}`} icon={<TrendingUp className="w-5 h-5 text-rose-600" />} color="rose" trend="down" />
-              <KPICard title="Total COGS" value={formatCurrency(stats.totalCogs)} sub="Inventory Cost" icon={<Info className="w-5 h-5 text-slate-600" />} color="slate" />
+              <KPICard title="Net Profit" value={formatVal(stats.netProfit)} sub={`${stats.netMargin.toFixed(1)}% Margin`} icon={<DollarSign className="w-5 h-5 text-emerald-600" />} color="emerald" />
+              <KPICard title="Gross Revenue" value={formatVal(stats.totalSales)} sub={`${stats.totalOrders} Orders`} icon={<ShoppingCart className="w-5 h-5 text-indigo-600" />} color="indigo" />
+              <KPICard title="Ad Investment" value={formatVal(stats.totalAdSpend)} sub={`ROAS: ${stats.roas.toFixed(2)}`} icon={<RefreshCw className="w-5 h-5 text-rose-600" />} color="rose" />
+              <KPICard title="Total COGS" value={formatVal(stats.totalCogs)} sub="Inventory & Shipping" icon={<Info className="w-5 h-5 text-slate-600" />} color="slate" />
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
               <div className="lg:col-span-2 bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
-                <h3 className="font-semibold text-slate-800 mb-6 flex items-center"><TrendingUp className="w-4 h-4 mr-2 text-indigo-500" /> Revenue Trend</h3>
+                <h3 className="font-semibold text-slate-800 mb-6 flex items-center"><TrendingUp className="w-4 h-4 mr-2 text-indigo-500" /> Revenue Growth</h3>
                 <div className="h-80">
                   <ResponsiveContainer width="100%" height="100%">
                     <BarChart data={chartData}>
                       <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
                       <XAxis dataKey="date" stroke="#94a3b8" fontSize={10} tickLine={false} axisLine={false} />
-                      <YAxis stroke="#94a3b8" fontSize={10} tickLine={false} axisLine={false} tickFormatter={(value) => `$${value}`} />
-                      <Tooltip cursor={{fill: '#f8fafc'}} contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.08)' }} />
+                      <YAxis stroke="#94a3b8" fontSize={10} tickLine={false} axisLine={false} tickFormatter={(v) => currency === 'PKR' ? `${v/1000}k` : `$${v}`} />
+                      <Tooltip 
+                        formatter={(v: number) => formatVal(v)}
+                        cursor={{fill: '#f8fafc'}} 
+                        contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.08)' }} 
+                      />
                       <Bar dataKey="sales" fill="#6366f1" radius={[6, 6, 0, 0]} />
                     </BarChart>
                   </ResponsiveContainer>
@@ -292,7 +332,7 @@ export default function App() {
               </div>
 
               <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm flex flex-col">
-                <h3 className="font-semibold text-slate-800 mb-6">Cost Breakdown</h3>
+                <h3 className="font-semibold text-slate-800 mb-6">P&L Split</h3>
                 <div className="flex-1 flex flex-col justify-center">
                   <div className="h-48">
                     <ResponsiveContainer width="100%" height="100%">
@@ -311,14 +351,14 @@ export default function App() {
                         >
                           {['#f43f5e', '#f59e0b', '#10b981', '#6366f1'].map((c, i) => <Cell key={i} fill={c} />)}
                         </Pie>
-                        <Tooltip />
+                        <Tooltip formatter={(v: number) => formatVal(v)} />
                       </PieChart>
                     </ResponsiveContainer>
                   </div>
                   <div className="mt-4 space-y-3">
-                    <LegendItem label="Ads" color="bg-rose-500" value={formatCurrency(stats.totalAdSpend)} />
-                    <LegendItem label="COGS" color="bg-amber-500" value={formatCurrency(stats.totalCogs)} />
-                    <LegendItem label="Profit" color="bg-indigo-500" value={formatCurrency(stats.netProfit)} />
+                    <LegendItem label="Ads" color="bg-rose-500" value={formatVal(stats.totalAdSpend)} />
+                    <LegendItem label="COGS" color="bg-amber-500" value={formatVal(stats.totalCogs)} />
+                    <LegendItem label="Net Profit" color="bg-indigo-500" value={formatVal(stats.netProfit)} />
                   </div>
                 </div>
               </div>
@@ -326,8 +366,8 @@ export default function App() {
 
             <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
               <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
-                <h3 className="font-semibold text-slate-800">Recent Transactions</h3>
-                <span className="text-xs font-medium text-slate-400">{filteredOrders.length} records found</span>
+                <h3 className="font-semibold text-slate-800">Order Logs</h3>
+                <span className="text-xs font-medium text-slate-400">{filteredOrders.length} orders analyzed</span>
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-sm">
@@ -335,16 +375,16 @@ export default function App() {
                     <tr>
                       <th className="px-6 py-3">Order</th>
                       <th className="px-6 py-3">Date</th>
-                      <th className="px-6 py-3">Amount</th>
+                      <th className="px-6 py-3">Gross</th>
                       <th className="px-6 py-3">Status</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {filteredOrders.slice(0, 10).map(order => (
-                      <tr key={order.id} className="hover:bg-slate-50 transition-colors">
+                    {filteredOrders.slice(0, 15).map(order => (
+                      <tr key={`${order.id}-${order.name}`} className="hover:bg-slate-50 transition-colors">
                         <td className="px-6 py-4 font-bold text-slate-900">{order.name}</td>
                         <td className="px-6 py-4 text-slate-500">{order.date}</td>
-                        <td className="px-6 py-4 font-semibold text-slate-900">{formatCurrency(order.total)}</td>
+                        <td className="px-6 py-4 font-semibold text-slate-900">{formatVal(order.total)}</td>
                         <td className="px-6 py-4">
                           <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
                             order.status.toLowerCase().includes('paid') || order.status.toLowerCase().includes('fulfilled') 
@@ -357,7 +397,7 @@ export default function App() {
                     ))}
                     {filteredOrders.length === 0 && (
                       <tr>
-                        <td colSpan={4} className="px-6 py-12 text-center text-slate-400 italic">No orders found in this range.</td>
+                        <td colSpan={4} className="px-6 py-12 text-center text-slate-400 italic">No order data present. Please upload reports.</td>
                       </tr>
                     )}
                   </tbody>
@@ -373,24 +413,27 @@ export default function App() {
               <div className="w-20 h-20 bg-indigo-50 rounded-2xl flex items-center justify-center mx-auto mb-6">
                 <Upload className="text-indigo-600 w-10 h-10" />
               </div>
-              <h2 className="text-2xl font-bold text-slate-900 mb-2">Sync Your Data</h2>
-              <p className="text-slate-500 mb-10 max-w-sm mx-auto">Upload weekly or monthly CSV exports from Shopify and Meta to power your dashboard.</p>
+              <h2 className="text-2xl font-bold text-slate-900 mb-2">Data Synchronizer</h2>
+              <p className="text-slate-500 mb-10 max-w-sm mx-auto">Import your Shopify and Meta export files to update the brand intelligence engine.</p>
               
               <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                 <ReportUploader 
-                  title="Shopify Sales" 
+                  title="Shopify Sales Report" 
+                  description="Required for financial accuracy"
                   type="shopify_sales" 
                   success={uploadStatus['shopify_sales']} 
                   onUpload={(e) => handleFileUpload(e, 'shopify_sales')} 
                 />
                 <ReportUploader 
-                  title="Shopify Orders" 
+                  title="Shopify Orders Report" 
+                  description="Required for SKU & COGS mapping"
                   type="shopify_orders" 
                   success={uploadStatus['shopify_orders']} 
                   onUpload={(e) => handleFileUpload(e, 'shopify_orders')} 
                 />
                 <ReportUploader 
-                  title="Meta Ad Spend" 
+                  title="Meta Ads Spend" 
+                  description="Required for ROAS calculation"
                   type="meta_ads" 
                   success={uploadStatus['meta_ads']} 
                   onUpload={(e) => handleFileUpload(e, 'meta_ads')} 
@@ -404,7 +447,7 @@ export default function App() {
            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 animate-in fade-in duration-500">
               <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
                 <div className="flex items-center justify-between mb-6">
-                  <h3 className="font-bold text-slate-800 flex items-center"><DollarSign className="w-5 h-5 mr-2 text-indigo-600" /> Operating Expenses</h3>
+                  <h3 className="font-bold text-slate-800 flex items-center"><DollarSign className="w-5 h-5 mr-2 text-indigo-600" /> Operational Overheads</h3>
                   <button onClick={() => setExpenses([...expenses, { id: Date.now().toString(), category: '', amount: 0, note: '' }])} className="p-2 bg-indigo-50 text-indigo-600 rounded-lg hover:bg-indigo-100">
                     <Plus className="w-5 h-5" />
                   </button>
@@ -412,35 +455,54 @@ export default function App() {
                 <div className="space-y-3">
                   {expenses.map((exp, idx) => (
                     <div key={exp.id} className="flex items-center space-x-3 group">
-                      <input type="text" placeholder="e.g. Shopify App Fee" className="flex-1 px-3 py-2 border border-slate-200 rounded-lg text-sm" value={exp.category} onChange={(e) => {
+                      <input type="text" placeholder="e.g. Office Rent" className="flex-1 px-3 py-2 border border-slate-200 rounded-lg text-sm" value={exp.category} onChange={(e) => {
                         const n = [...expenses]; n[idx].category = e.target.value; setExpenses(n);
                       }} />
-                      <input type="number" className="w-24 px-3 py-2 border border-slate-200 rounded-lg text-sm" value={exp.amount} onChange={(e) => {
-                        const n = [...expenses]; n[idx].amount = parseFloat(e.target.value) || 0; setExpenses(n);
-                      }} />
-                      <button onClick={() => setExpenses(expenses.filter(e => e.id !== exp.id))} className="text-slate-300 hover:text-rose-500"><Trash2 className="w-4 h-4" /></button>
-                    </div>
-                  ))}
-                  {expenses.length === 0 && <p className="text-center py-8 text-slate-400 text-sm italic">No manual expenses added.</p>}
-                </div>
-              </div>
-              <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
-                <h3 className="font-bold text-slate-800 mb-6 flex items-center"><Info className="w-5 h-5 mr-2 text-indigo-600" /> COGS Settings</h3>
-                <div className="space-y-6">
-                  {cogs.map((item, idx) => (
-                    <div key={item.sku} className="flex items-center justify-between border-b border-slate-50 pb-4">
-                      <div>
-                        <p className="text-xs font-bold text-indigo-600">{item.sku}</p>
-                        <p className="text-sm text-slate-700">{item.productName}</p>
-                      </div>
-                      <div className="flex items-center space-x-2">
-                        <span className="text-xs text-slate-400 font-medium">Cost:</span>
-                        <input type="number" className="w-20 px-2 py-1 border rounded font-medium text-sm text-right" value={item.cogs} onChange={(e) => {
-                          const n = [...cogs]; n[idx].cogs = parseFloat(e.target.value) || 0; setCogs(n);
+                      <div className="relative">
+                        <span className="absolute left-3 top-2 text-slate-400 text-sm">$</span>
+                        <input type="number" className="w-32 pl-7 pr-3 py-2 border border-slate-200 rounded-lg text-sm" placeholder="USD" value={exp.amount || ''} onChange={(e) => {
+                          const n = [...expenses]; n[idx].amount = parseFloat(e.target.value) || 0; setExpenses(n);
                         }} />
                       </div>
+                      <button onClick={() => setExpenses(expenses.filter(e => e.id !== exp.id))} className="text-slate-300 hover:text-rose-500 transition-colors"><Trash2 className="w-4 h-4" /></button>
                     </div>
                   ))}
+                  {expenses.length === 0 && <p className="text-center py-10 text-slate-400 text-sm italic">No overheads added for this period.</p>}
+                </div>
+              </div>
+
+              <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
+                <div className="flex items-center justify-between mb-6">
+                  <h3 className="font-bold text-slate-800 flex items-center"><Info className="w-5 h-5 mr-2 text-indigo-600" /> Product COGS Ledger</h3>
+                  <p className="text-[10px] text-slate-400 font-bold uppercase">Automated SKU Detection</p>
+                </div>
+                <div className="space-y-4 max-h-[500px] overflow-y-auto pr-2">
+                  {cogs.map((item, idx) => (
+                    <div key={item.sku} className="bg-slate-50 p-4 rounded-xl border border-slate-100 flex items-center justify-between">
+                      <div className="max-w-[60%]">
+                        <p className="text-[10px] font-black text-indigo-600 truncate">{item.sku}</p>
+                        <p className="text-sm font-semibold text-slate-700 truncate">{item.productName}</p>
+                      </div>
+                      <div className="flex items-center space-x-3">
+                        <span className="text-[10px] text-slate-400 font-bold">Unit Cost (USD)</span>
+                        <input 
+                          type="number" 
+                          className="w-24 px-3 py-1.5 bg-white border border-slate-200 rounded-lg font-bold text-sm text-right text-slate-900" 
+                          value={item.cogs || ''} 
+                          placeholder="0.00"
+                          onChange={(e) => {
+                            const n = [...cogs]; n[idx].cogs = parseFloat(e.target.value) || 0; setCogs(n);
+                          }} 
+                        />
+                      </div>
+                    </div>
+                  ))}
+                  {cogs.length === 0 && (
+                    <div className="text-center py-20 bg-slate-50 rounded-2xl border border-dashed border-slate-200">
+                      <AlertCircle className="w-8 h-8 text-slate-300 mx-auto mb-3" />
+                      <p className="text-slate-400 text-sm font-medium">Upload "Orders Report" to auto-detect SKUs.</p>
+                    </div>
+                  )}
                 </div>
               </div>
            </div>
@@ -453,21 +515,21 @@ export default function App() {
                 <Sparkles className="w-48 h-48" />
               </div>
               <div className="relative z-10">
-                <h2 className="text-3xl font-bold mb-2">Financial Insights</h2>
-                <p className="text-indigo-100 text-lg opacity-90 mb-8 max-w-lg">Audit performance from {startDate} to {endDate}.</p>
+                <h2 className="text-3xl font-bold mb-2">AI Performance Audit</h2>
+                <p className="text-indigo-100 text-lg opacity-90 mb-8 max-w-lg">Let Gemini analyze your current period performance and find optimization opportunities.</p>
                 <button 
                   onClick={runAiAnalysis}
                   disabled={isAnalyzing}
                   className="px-8 py-4 bg-white text-indigo-700 font-bold rounded-2xl shadow-xl hover:scale-105 transition-all disabled:opacity-50 flex items-center"
                 >
                   {isAnalyzing ? <div className="w-5 h-5 border-2 border-indigo-700 border-t-transparent rounded-full animate-spin mr-3"></div> : <Sparkles className="w-5 h-5 mr-2" />}
-                  {isAnalyzing ? 'Analyzing...' : 'Run Performance Audit'}
+                  {isAnalyzing ? 'Processing Intelligence...' : 'Generate Actionable Insights'}
                 </button>
               </div>
             </div>
 
-            {aiInsight && typeof aiInsight === 'string' && (
-              <div className="bg-white p-10 rounded-3xl border border-slate-200 shadow-sm">
+            {aiInsight && (
+              <div className="bg-white p-10 rounded-3xl border border-slate-200 shadow-sm animate-in fade-in zoom-in duration-500">
                 <div className="prose prose-indigo max-w-none">
                   {aiInsight.split('\n').map((line, i) => (
                     <p key={i} className="text-slate-700 mb-4 leading-relaxed font-medium">{line}</p>
@@ -482,8 +544,8 @@ export default function App() {
   );
 }
 
-function KPICard({ title, value, sub, icon, color, trend }: { 
-  title: string; value: string; sub: string; icon: React.ReactNode; color: string; trend?: 'up' | 'down' 
+function KPICard({ title, value, sub, icon, color }: { 
+  title: string; value: string; sub: string; icon: React.ReactNode; color: string; 
 }) {
   const colorMap: any = {
     emerald: 'bg-emerald-50 text-emerald-600 border-emerald-100',
@@ -493,14 +555,14 @@ function KPICard({ title, value, sub, icon, color, trend }: {
   };
 
   return (
-    <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm transition-all hover:shadow-md">
+    <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm transition-all hover:shadow-md group">
       <div className="flex items-center justify-between mb-4">
         <div className={`p-2.5 rounded-xl border ${colorMap[color]}`}>
           {icon}
         </div>
       </div>
       <h3 className="text-slate-400 text-[10px] font-bold uppercase tracking-wider mb-1">{title}</h3>
-      <div className="text-2xl font-black text-slate-900">{value}</div>
+      <div className="text-2xl font-black text-slate-900 group-hover:text-indigo-600 transition-colors">{value}</div>
       <p className="text-xs text-slate-500 mt-1 font-medium">{sub}</p>
     </div>
   );
@@ -518,13 +580,14 @@ function LegendItem({ label, color, value }: { label: string; color: string; val
   );
 }
 
-function ReportUploader({ title, type, onUpload, success }: { title: string; type: string; onUpload: (e: any) => void, success?: boolean }) {
+function ReportUploader({ title, description, type, onUpload, success }: { title: string; description: string; type: string; onUpload: (e: any) => void, success?: boolean }) {
   return (
-    <div className={`group border-2 border-dashed p-6 rounded-2xl transition-all text-center ${success ? 'border-emerald-400 bg-emerald-50' : 'border-slate-200 hover:border-indigo-400 hover:bg-indigo-50'}`}>
-      <h4 className="text-sm font-bold text-slate-700 mb-3">{title}</h4>
+    <div className={`group border-2 border-dashed p-8 rounded-3xl transition-all text-center flex flex-col h-full ${success ? 'border-emerald-400 bg-emerald-50' : 'border-slate-200 hover:border-indigo-400 hover:bg-indigo-50'}`}>
+      <h4 className="text-base font-bold text-slate-800 mb-1">{title}</h4>
+      <p className="text-[10px] text-slate-400 font-bold mb-6 flex-1">{description}</p>
       <input type="file" id={`upload-${type}`} className="hidden" accept=".csv" onChange={onUpload} />
-      <label htmlFor={`upload-${type}`} className={`inline-flex items-center px-4 py-2 text-xs font-bold rounded-xl cursor-pointer transition-all ${success ? 'bg-emerald-600 text-white' : 'bg-slate-900 text-white'}`}>
-        {success ? <><CheckCircle2 className="w-3.5 h-3.5 mr-2" /> Uploaded</> : <><Upload className="w-3.5 h-3.5 mr-2" /> Upload CSV</>}
+      <label htmlFor={`upload-${type}`} className={`inline-flex items-center justify-center px-6 py-3 text-xs font-bold rounded-2xl cursor-pointer transition-all shadow-sm active:scale-95 ${success ? 'bg-emerald-600 text-white' : 'bg-slate-900 text-white hover:bg-slate-800'}`}>
+        {success ? <><CheckCircle2 className="w-4 h-4 mr-2" /> Synced</> : <><Upload className="w-4 h-4 mr-2" /> Select CSV</>}
       </label>
     </div>
   );

@@ -70,3 +70,4 @@ export interface DashboardStats {
 }
 
 export type ReportType = 'shopify_orders' | 'shopify_sales' | 'meta_ads' | 'settlement' | 'cogs' | 'expenses';
+export type Currency = 'PKR' | 'USD';
