@@ -1,16 +1,16 @@
 
 import React, { useState, useMemo } from 'react';
 import { 
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Cell, PieChart, Pie
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, PieChart, Pie
 } from 'recharts';
 import { 
-  Upload, Settings, TrendingUp, DollarSign, ShoppingCart, 
-  ArrowUpRight, ArrowDownRight, Info, AlertCircle, Sparkles, Plus, Trash2, Filter, Calendar
+  Upload, TrendingUp, DollarSign, ShoppingCart, 
+  ArrowUpRight, ArrowDownRight, Info, AlertCircle, Sparkles, Plus, Trash2, Calendar
 } from 'lucide-react';
 import { parseCSV, formatCurrency } from './utils/csvParser';
 import { geminiService } from './services/geminiService';
 import { 
-  ShopifyOrder, MetaAdReport, SettlementReport, ManualExpense, ProductCOGS, 
+  ShopifyOrder, MetaAdReport, ManualExpense, ProductCOGS, 
   DashboardStats, ReportType 
 } from './types';
 
@@ -32,7 +32,6 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'reports' | 'manual' | 'ai'>('dashboard');
   const [orders, setOrders] = useState<ShopifyOrder[]>(MOCK_ORDERS);
   const [ads, setAds] = useState<MetaAdReport[]>([]);
-  const [settlements, setSettlements] = useState<SettlementReport[]>([]);
   const [expenses, setExpenses] = useState<ManualExpense[]>([]);
   const [cogs, setCogs] = useState<ProductCOGS[]>([
     { sku: 'HY-01', productName: 'Hydrict Bottle V1', cogs: 25 },
@@ -40,10 +39,9 @@ export default function App() {
   ]);
   const [aiInsight, setAiInsight] = useState<string>('');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [selectedProduct, setSelectedProduct] = useState<string>('All');
   
   // Date range states
-  const [startDate, setStartDate] = useState<string>('2023-10-01'); // Adjusted for mock data view
+  const [startDate, setStartDate] = useState<string>('2023-10-01');
   const [endDate, setEndDate] = useState<string>(getTodayStr());
 
   // Helper to filter data by date
@@ -65,7 +63,6 @@ export default function App() {
     const totalShipping = filteredOrders.reduce((acc, curr) => acc + curr.shipping, 0);
     const totalExpenses = expenses.reduce((acc, curr) => acc + curr.amount, 0);
     
-    // Calculate COGS for filtered orders
     let totalCogs = 0;
     filteredOrders.forEach(order => {
       order.lineItems.forEach(item => {
@@ -74,7 +71,7 @@ export default function App() {
       });
     });
 
-    const totalFees = settlements.reduce((acc, curr) => acc + curr.fees, 0) || (totalSales * 0.03); 
+    const totalFees = totalSales * 0.03; 
 
     const netProfit = totalSales - totalAdSpend - totalCogs - totalShipping - totalExpenses - totalFees;
     const roas = totalAdSpend > 0 ? totalSales / totalAdSpend : 0;
@@ -91,7 +88,7 @@ export default function App() {
       roas,
       netMargin
     };
-  }, [filteredOrders, filteredAds, expenses, cogs, settlements]);
+  }, [filteredOrders, filteredAds, expenses, cogs]);
 
   const chartData = useMemo(() => {
     const dailyData: Record<string, any> = {};
@@ -206,7 +203,7 @@ export default function App() {
             <div className="flex items-center justify-between">
               <div>
                 <h2 className="text-2xl font-bold text-slate-900">Store Overview</h2>
-                <p className="text-sm text-slate-500">Showing results from {startDate} to {endDate}</p>
+                <p className="text-sm text-slate-500">Results from {startDate} to {endDate}</p>
               </div>
               <div className="flex items-center space-x-2">
                 <button 
@@ -313,7 +310,7 @@ export default function App() {
                     ))}
                     {filteredOrders.length === 0 && (
                       <tr>
-                        <td colSpan={4} className="px-6 py-12 text-center text-slate-400 italic">No orders found in this date range.</td>
+                        <td colSpan={4} className="px-6 py-12 text-center text-slate-400 italic">No orders found in this range.</td>
                       </tr>
                     )}
                   </tbody>
@@ -330,19 +327,11 @@ export default function App() {
                 <Upload className="text-indigo-600 w-10 h-10" />
               </div>
               <h2 className="text-2xl font-bold text-slate-900 mb-2">Sync Your Data</h2>
-              <p className="text-slate-500 mb-10 max-w-sm mx-auto">Upload weekly or monthly CSV exports from Shopify and Meta to update your insights.</p>
+              <p className="text-slate-500 mb-10 max-w-sm mx-auto">Upload weekly or monthly CSV exports from Shopify and Meta.</p>
               
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <ReportUploader title="Shopify Orders" type="shopify_orders" onUpload={(e) => handleFileUpload(e, 'shopify_orders')} />
                 <ReportUploader title="Meta Ad Spend" type="meta_ads" onUpload={(e) => handleFileUpload(e, 'meta_ads')} />
-              </div>
-            </div>
-            
-            <div className="bg-amber-50 border border-amber-200 p-4 rounded-xl flex items-start space-x-3">
-              <AlertCircle className="w-5 h-5 text-amber-500 mt-0.5" />
-              <div>
-                <p className="text-sm font-bold text-amber-800">Pro Tip</p>
-                <p className="text-xs text-amber-700">Make sure your date column in the CSV is in YYYY-MM-DD format for accurate range filtering.</p>
               </div>
             </div>
           </div>
@@ -360,10 +349,10 @@ export default function App() {
                 <div className="space-y-3">
                   {expenses.map((exp, idx) => (
                     <div key={exp.id} className="flex items-center space-x-3 group">
-                      <input type="text" placeholder="e.g. Shopify App Fee" className="flex-1 px-3 py-2 border border-slate-200 rounded-lg text-sm focus:ring-1 focus:ring-indigo-500" value={exp.category} onChange={(e) => {
+                      <input type="text" placeholder="e.g. Shopify App Fee" className="flex-1 px-3 py-2 border border-slate-200 rounded-lg text-sm" value={exp.category} onChange={(e) => {
                         const n = [...expenses]; n[idx].category = e.target.value; setExpenses(n);
                       }} />
-                      <input type="number" placeholder="$" className="w-24 px-3 py-2 border border-slate-200 rounded-lg text-sm" value={exp.amount} onChange={(e) => {
+                      <input type="number" className="w-24 px-3 py-2 border border-slate-200 rounded-lg text-sm" value={exp.amount} onChange={(e) => {
                         const n = [...expenses]; n[idx].amount = parseFloat(e.target.value) || 0; setExpenses(n);
                       }} />
                       <button onClick={() => setExpenses(expenses.filter(e => e.id !== exp.id))} className="text-slate-300 hover:text-rose-500"><Trash2 className="w-4 h-4" /></button>
@@ -380,12 +369,9 @@ export default function App() {
                         <p className="text-xs font-bold text-indigo-600">{item.sku}</p>
                         <p className="text-sm text-slate-700">{item.productName}</p>
                       </div>
-                      <div className="flex items-center space-x-2">
-                        <span className="text-slate-400 text-xs">$</span>
-                        <input type="number" className="w-20 px-2 py-1 border rounded font-medium text-sm text-right" value={item.cogs} onChange={(e) => {
-                          const n = [...cogs]; n[idx].cogs = parseFloat(e.target.value) || 0; setCogs(n);
-                        }} />
-                      </div>
+                      <input type="number" className="w-20 px-2 py-1 border rounded font-medium text-sm text-right" value={item.cogs} onChange={(e) => {
+                        const n = [...cogs]; n[idx].cogs = parseFloat(e.target.value) || 0; setCogs(n);
+                      }} />
                     </div>
                   ))}
                 </div>
@@ -400,23 +386,20 @@ export default function App() {
                 <Sparkles className="w-48 h-48" />
               </div>
               <div className="relative z-10">
-                <div className="flex items-center space-x-3 mb-6">
-                  <div className="px-3 py-1 bg-white/20 rounded-full backdrop-blur-md text-[10px] font-bold uppercase tracking-widest">Hydrict Brain</div>
-                </div>
-                <h2 className="text-3xl font-bold mb-2">Generate Financial Insights</h2>
-                <p className="text-indigo-100 text-lg opacity-90 mb-8 max-w-lg">Get a specialized audit of your {startDate} to {endDate} performance.</p>
+                <h2 className="text-3xl font-bold mb-2">Financial Insights</h2>
+                <p className="text-indigo-100 text-lg opacity-90 mb-8 max-w-lg">Audit performance from {startDate} to {endDate}.</p>
                 <button 
                   onClick={runAiAnalysis}
                   disabled={isAnalyzing}
                   className="px-8 py-4 bg-white text-indigo-700 font-bold rounded-2xl shadow-xl hover:scale-105 transition-all disabled:opacity-50 flex items-center"
                 >
                   {isAnalyzing ? <div className="w-5 h-5 border-2 border-indigo-700 border-t-transparent rounded-full animate-spin mr-3"></div> : <Sparkles className="w-5 h-5 mr-2" />}
-                  {isAnalyzing ? 'Deep Analysis in Progress...' : 'Run Performance Audit'}
+                  {isAnalyzing ? 'Analyzing...' : 'Run Performance Audit'}
                 </button>
               </div>
             </div>
 
-            {aiInsight && (
+            {aiInsight && typeof aiInsight === 'string' && (
               <div className="bg-white p-10 rounded-3xl border border-slate-200 shadow-sm">
                 <div className="prose prose-indigo max-w-none">
                   {aiInsight.split('\n').map((line, i) => (
@@ -448,11 +431,6 @@ function KPICard({ title, value, sub, icon, color, trend }: {
         <div className={`p-2.5 rounded-xl border ${colorMap[color]}`}>
           {icon}
         </div>
-        {trend && (
-          <div className={`text-[10px] font-bold px-2 py-1 rounded-full ${trend === 'up' ? 'bg-emerald-50 text-emerald-600' : 'bg-rose-50 text-rose-600'}`}>
-            {trend === 'up' ? '+' : '-'} 14.2%
-          </div>
-        )}
       </div>
       <h3 className="text-slate-400 text-[10px] font-bold uppercase tracking-wider mb-1">{title}</h3>
       <div className="text-2xl font-black text-slate-900">{value}</div>
@@ -475,10 +453,10 @@ function LegendItem({ label, color, value }: { label: string; color: string; val
 
 function ReportUploader({ title, type, onUpload }: { title: string; type: string; onUpload: (e: any) => void }) {
   return (
-    <div className="group relative border-2 border-dashed border-slate-200 p-6 rounded-2xl hover:border-indigo-400 hover:bg-indigo-50 transition-all text-center">
+    <div className="group border-2 border-dashed border-slate-200 p-6 rounded-2xl hover:border-indigo-400 hover:bg-indigo-50 transition-all text-center">
       <h4 className="text-sm font-bold text-slate-700 mb-3">{title}</h4>
       <input type="file" id={`upload-${type}`} className="hidden" accept=".csv" onChange={onUpload} />
-      <label htmlFor={`upload-${type}`} className="inline-flex items-center px-4 py-2 bg-slate-900 text-white text-xs font-bold rounded-xl cursor-pointer hover:bg-indigo-600 transition-colors">
+      <label htmlFor={`upload-${type}`} className="inline-flex items-center px-4 py-2 bg-slate-900 text-white text-xs font-bold rounded-xl cursor-pointer">
         <Upload className="w-3.5 h-3.5 mr-2" /> Upload CSV
       </label>
     </div>
